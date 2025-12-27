@@ -41,6 +41,9 @@ class Backtester:
         winning_trades = 0
         losing_trades = 0
         
+        # Track cost basis for position (FIFO)
+        position_queue = []  # List of (quantity, price) tuples
+        
         # Iterate through price history
         for i in range(len(price_history)):
             current_data = price_history[:i+1]
@@ -57,25 +60,34 @@ class Backtester:
                 
                 if bot.buy(symbol, quantity, current_price):
                     trades_executed += 1
+                    # Track cost basis for this purchase
+                    position_queue.append((quantity, current_price))
             
             elif signal == Signal.SELL and symbol in bot.get_positions():
                 # Sell all position
-                quantity = bot.get_positions()[symbol]
-                initial_cost = None
+                quantity_to_sell = bot.get_positions()[symbol]
                 
-                # Find the cost basis for this position
-                for trade in bot.get_trade_history():
-                    if trade['type'] == 'BUY' and trade['symbol'] == symbol:
-                        initial_cost = trade['price']
-                        break
-                
-                if bot.sell(symbol, quantity, current_price):
+                if bot.sell(symbol, quantity_to_sell, current_price):
                     trades_executed += 1
                     
+                    # Calculate P&L using FIFO cost basis
+                    remaining = quantity_to_sell
+                    total_cost = 0
+                    while remaining > 0 and position_queue:
+                        qty, price = position_queue.pop(0)
+                        if qty <= remaining:
+                            total_cost += qty * price
+                            remaining -= qty
+                        else:
+                            total_cost += remaining * price
+                            position_queue.insert(0, (qty - remaining, price))
+                            remaining = 0
+                    
                     # Track winning/losing trades
-                    if initial_cost and current_price > initial_cost:
+                    avg_cost = total_cost / quantity_to_sell if quantity_to_sell > 0 else 0
+                    if current_price > avg_cost:
                         winning_trades += 1
-                    elif initial_cost and current_price < initial_cost:
+                    elif current_price < avg_cost:
                         losing_trades += 1
         
         # Calculate final portfolio value

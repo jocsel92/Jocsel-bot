@@ -149,9 +149,11 @@ class MomentumStrategy(TradingStrategy):
     Sells when price momentum turns negative.
     """
     
-    def __init__(self, lookback: int = 5):
+    def __init__(self, lookback: int = 5, buy_threshold: float = 0.02, sell_threshold: float = -0.02):
         super().__init__("Momentum Strategy")
         self.lookback = lookback
+        self.buy_threshold = buy_threshold
+        self.sell_threshold = sell_threshold
     
     def generate_signal(self, price_history: List[Dict]) -> Signal:
         """Generate signal based on momentum."""
@@ -166,10 +168,10 @@ class MomentumStrategy(TradingStrategy):
         momentum = (current_price - past_price) / past_price
         
         # Strong positive momentum
-        if momentum > 0.02:  # 2% gain
+        if momentum > self.buy_threshold:
             return Signal.BUY
         # Strong negative momentum
-        elif momentum < -0.02:  # 2% loss
+        elif momentum < self.sell_threshold:
             return Signal.SELL
         
         return Signal.HOLD
