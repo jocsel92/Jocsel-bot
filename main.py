@@ -9,11 +9,22 @@ from config import Config
 
 def main():
     """Main function to run the trading bot."""
-    parser = argparse.ArgumentParser(description='Jocsel Trading Bot')
+    parser = argparse.ArgumentParser(
+        description='Jocsel Trading Bot',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python main.py --demo                    # Run basic demo
+  python main.py --strategy                # Run strategy backtesting
+  python strategy_runner.py --strategy all # Run all strategies
+        """
+    )
     parser.add_argument('--balance', type=float, default=10000.0,
                        help='Initial balance (default: 10000.0)')
     parser.add_argument('--demo', action='store_true',
                        help='Run demo trading sequence')
+    parser.add_argument('--strategy', action='store_true',
+                       help='Run strategy backtesting')
     
     args = parser.parse_args()
     
@@ -29,11 +40,15 @@ def main():
     print(f"Initial Balance: ${bot.get_balance():.2f}")
     print()
     
-    if args.demo:
+    if args.strategy:
+        run_strategy_demo()
+    elif args.demo:
         run_demo(bot)
     else:
-        print("Bot initialized. Use --demo to run a demo trading sequence.")
-        print(f"Current Balance: ${bot.get_balance():.2f}")
+        print("Bot initialized.")
+        print("Use --demo to run a demo trading sequence.")
+        print("Use --strategy to run strategy backtesting.")
+        print(f"\nCurrent Balance: ${bot.get_balance():.2f}")
         print(f"Current Positions: {bot.get_positions()}")
     
     print()
@@ -84,6 +99,36 @@ def run_demo(bot: TradingBot):
         quantity = trade['quantity']
         price = trade['price']
         print(f"{trade_type}: {quantity} {symbol} @ ${price:.2f}")
+
+
+def run_strategy_demo():
+    """Run a quick strategy demonstration."""
+    from market_data import MarketData
+    from strategy import MovingAverageCrossover
+    from backtesting import Backtester
+    
+    print("Running strategy backtesting demo...")
+    print()
+    
+    # Generate market data
+    market = MarketData('BTC', 50000.0)
+    market.generate_price_data(num_periods=100, volatility=0.02)
+    
+    # Test Moving Average strategy
+    strategy = MovingAverageCrossover(short_period=10, long_period=30)
+    backtester = Backtester(initial_balance=10000.0)
+    
+    results = backtester.run_backtest(
+        strategy=strategy,
+        market_data=market,
+        symbol='BTC',
+        position_size=0.2
+    )
+    
+    backtester.print_results()
+    
+    print("\nFor more detailed strategy testing, use:")
+    print("  python strategy_runner.py --strategy all")
 
 
 if __name__ == '__main__':
