@@ -54,6 +54,8 @@ TREND_BIAS = 0.10
 DEVIATION = 10
 MAGIC = 234567
 ORDER_FILLING_MODE = os.getenv("ORDER_FILLING_MODE", "FOK").upper()
+if ORDER_FILLING_MODE not in {"FOK", "IOC"}:
+    raise RuntimeError("ORDER_FILLING_MODE inválido. Usa FOK o IOC.")
 
 BUFFER_PIPS = 30
 TREND_EMA = 200
@@ -230,8 +232,9 @@ def connect_mt5():
         if mt5.initialize(login=LOGIN, server=SERVER, password=PASSWORD):
             print("Conectado a MT5")
             return True
-        print(f"Falló conexión ({i+1}/{RETRIES}): {mt5.last_error()}")
-        time.sleep(2)
+        else:
+            print(f"Falló conexión ({i+1}/{RETRIES}): {mt5.last_error()}")
+            time.sleep(2)
     return False
 
 
@@ -378,6 +381,7 @@ def ml_signal_with_trend_bias(df, trend, model_path, scaler_path, feature_cols, 
         probas[1] += TREND_BIAS
     elif trend == "bear":
         probas[0] += TREND_BIAS
+    probas = np.clip(probas, 1e-9, None)
     probas = probas / probas.sum()
 
     best_class = int(np.argmax(probas))
@@ -659,11 +663,11 @@ def main():
 
             if sym in LAST_TP_DIR and sym in LAST_TP_PRICE and LAST_TP_DIR[sym] == action:
                 atr_val = float(df["ATR_14"].iloc[-1])
-                if action == "sell" and price > (LAST_TP_PRICE[sym] + atr_val):
-                    pass
-                elif action == "buy" and price < (LAST_TP_PRICE[sym] - atr_val):
-                    pass
-                else:
+                allow_reentry = (
+                    (action == "sell" and price > (LAST_TP_PRICE[sym] + atr_val))
+                    or (action == "buy" and price < (LAST_TP_PRICE[sym] - atr_val))
+                )
+                if not allow_reentry:
                     print(f"{sym}: evita re-entrada mismo impulso.")
                     continue
 
