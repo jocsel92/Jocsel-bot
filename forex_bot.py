@@ -104,6 +104,10 @@ NEWS_EVENTS_UTC = [
     if x.strip()
 ]
 NEWS_BLOCK_MINUTES = int(os.getenv("NEWS_BLOCK_MINUTES", "30"))
+INVALID_FILL_RETCODE = getattr(mt5, "TRADE_RETCODE_INVALID_FILL", None)
+INVALID_GENERIC_RETCODE = getattr(mt5, "TRADE_RETCODE_INVALID", None)
+MODEL_CACHE = {}
+SCALER_CACHE = {}
 
 
 def is_news_block(now_utc: datetime) -> bool:
@@ -115,7 +119,7 @@ def is_news_block(now_utc: datetime) -> bool:
 
 def is_trading_time(now_utc: datetime) -> bool:
     now_lon_dt = now_utc.astimezone(LON_TZ)
-    if now_lon_dt.weekday() >= 5:  # Saturday/Sunday
+    if now_lon_dt.weekday() in (5, 6):
         return False
 
     now_lon = now_lon_dt.time()
@@ -362,8 +366,12 @@ def ml_signal_with_trend_bias(df, trend, model_path, scaler_path, feature_cols, 
         return None
     try:
         x_live = pd.DataFrame(df[feature_cols].astype(np.float64).values[[-1]], columns=feature_cols)
-        scaler = load(scaler_path)
-        model = load(model_path)
+        if scaler_path not in SCALER_CACHE:
+            SCALER_CACHE[scaler_path] = load(scaler_path)
+        if model_path not in MODEL_CACHE:
+            MODEL_CACHE[model_path] = load(model_path)
+        scaler = SCALER_CACHE[scaler_path]
+        model = MODEL_CACHE[model_path]
         if hasattr(scaler, "feature_names_in_"):
             expected = list(scaler.feature_names_in_)
             if expected != feature_cols:
@@ -447,7 +455,7 @@ def modify_position_sltp(symbol, ticket, sl, tp, magic, comment):
     if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
         res_comment = None if result is None else getattr(result, "comment", None)
         print(
-            f"{symbol}: fallo {comment} ticket={ticket} ret={None if result is None else result.retcode} "
+            f"{symbol}: error al actualizar {comment} ticket={ticket} ret={None if result is None else result.retcode} "
             f"res_comment={res_comment} last_error={mt5.last_error()}"
         )
     return result
@@ -531,9 +539,9 @@ def send_order(symbol, action, lot, df):
         "type_filling": filling_type,
     }
     result = mt5.order_send(req)
-    invalid_fill = getattr(mt5, "TRADE_RETCODE_INVALID_FILL", None)
-    invalid_generic = getattr(mt5, "TRADE_RETCODE_INVALID", None)
-    fallback_retcodes = {code for code in (invalid_fill, invalid_generic) if code is not None}
+    fallback_retcodes = {
+        code for code in (INVALID_FILL_RETCODE, INVALID_GENERIC_RETCODE) if code is not None
+    }
     if result is not None and result.retcode in fallback_retcodes:
         req["type_filling"] = mt5.ORDER_FILLING_IOC
         result = mt5.order_send(req)
@@ -568,7 +576,7 @@ def main():
         print(f"⏳ Loop UTC: {now_utc.isoformat()}")
 
         if is_news_block(now_utc):
-            print("Bloqueado por ventana de noticia macro.")
+            print("Bloqueado por ventana de noticias macro.")
             elapsed = time.time() - loop_start
             time.sleep(max(0, LOOP_SECONDS - elapsed))
             continue
