@@ -423,7 +423,7 @@ def ml_signal_with_trend_bias(df, trend, model_path, scaler_path, feature_cols, 
             return heuristic_signal(df, trend, sym)
         return None
     try:
-        x_live = pd.DataFrame(df[feature_cols].astype(np.float64).values[[-1]], columns=feature_cols)
+        x_live = pd.DataFrame(df[feature_cols].astype(np.float64).iloc[[-1]], columns=feature_cols)
         if scaler_path not in SCALER_CACHE:
             SCALER_CACHE[scaler_path] = load(scaler_path)
         if model_path not in MODEL_CACHE:

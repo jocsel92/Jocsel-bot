@@ -4,7 +4,7 @@ Bot de trading Forex en MT5 con filtros de robustez para ejecución en vivo.
 
 ## Archivo principal
 
-- `/home/runner/work/Jocsel-bot/Jocsel-bot/forex_bot.py`
+- `forex_bot.py`
 
 ## Mejoras implementadas
 
@@ -32,5 +32,5 @@ Bot de trading Forex en MT5 con filtros de robustez para ejecución en vivo.
 ## Ejecución
 
 ```bash
-python /home/runner/work/Jocsel-bot/Jocsel-bot/forex_bot.py
+python forex_bot.py
 ```
