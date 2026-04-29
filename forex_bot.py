@@ -108,6 +108,7 @@ INVALID_FILL_RETCODE = getattr(mt5, "TRADE_RETCODE_INVALID_FILL", None)
 INVALID_GENERIC_RETCODE = getattr(mt5, "TRADE_RETCODE_INVALID", None)
 MODEL_CACHE = {}
 SCALER_CACHE = {}
+USE_HEURISTIC_FALLBACK = os.getenv("USE_HEURISTIC_FALLBACK", "1").strip() not in {"0", "false", "False"}
 
 
 def is_news_block(now_utc: datetime) -> bool:
@@ -358,11 +359,68 @@ def set_cooldown(symbol, now_utc):
     LAST_CLOSE_UTC_PER_SYMBOL[symbol] = now_utc
 
 
+def heuristic_signal(df: pd.DataFrame, trend: str, sym: str):
+    if len(df) < 3:
+        return None
+
+    last = df.iloc[-1]
+    prev = df.iloc[-2]
+    rsi_now = float(last["RSI_14"])
+    macd_now = float(last["MACD"])
+    macd_prev = float(prev["MACD"])
+    adx_now = float(last["ADX_14"])
+
+    buy_score = 0.0
+    sell_score = 0.0
+
+    if trend == "bull":
+        buy_score += 0.30
+    elif trend == "bear":
+        sell_score += 0.30
+
+    if 35 <= rsi_now <= 65:
+        buy_score += 0.10
+        sell_score += 0.10
+    elif rsi_now < 35:
+        buy_score += 0.25
+    elif rsi_now > 65:
+        sell_score += 0.25
+
+    if macd_now > macd_prev:
+        buy_score += 0.25
+    elif macd_now < macd_prev:
+        sell_score += 0.25
+
+    if adx_now >= 22:
+        buy_score += 0.20
+        sell_score += 0.20
+
+    if macd_now > 0:
+        buy_score += 0.15
+    elif macd_now < 0:
+        sell_score += 0.15
+
+    total = buy_score + sell_score
+    if total <= 0:
+        return None
+
+    p_sell = sell_score / total
+    p_buy = buy_score / total
+    best_class = 1 if p_buy >= p_sell else 0
+    best_conf = max(p_buy, p_sell)
+    print(
+        f"{sym} → HEUR BUY: {p_buy*100:.2f}% | HEUR SELL: {p_sell*100:.2f}% | acción={'BUY' if best_class==1 else 'SELL'} | conf={best_conf:.4f}"
+    )
+    return best_class, best_conf, np.array([p_sell, p_buy], dtype=float)
+
+
 def ml_signal_with_trend_bias(df, trend, model_path, scaler_path, feature_cols, sym):
     if sym in DISABLED_PAIRS:
         return None
     if not (os.path.exists(model_path) and os.path.exists(scaler_path)):
         print(f"{sym}: falta modelo o scaler.")
+        if USE_HEURISTIC_FALLBACK:
+            return heuristic_signal(df, trend, sym)
         return None
     try:
         x_live = pd.DataFrame(df[feature_cols].astype(np.float64).values[[-1]], columns=feature_cols)
@@ -375,12 +433,16 @@ def ml_signal_with_trend_bias(df, trend, model_path, scaler_path, feature_cols, 
         if hasattr(scaler, "feature_names_in_"):
             expected = list(scaler.feature_names_in_)
             if expected != feature_cols:
+                print(f"{sym}: feature mismatch.")
+                if USE_HEURISTIC_FALLBACK:
+                    return heuristic_signal(df, trend, sym)
                 DISABLED_PAIRS.add(sym)
-                print(f"{sym}: feature mismatch, deshabilitado.")
                 return None
         x_scaled = scaler.transform(x_live)
     except Exception as e:
         print(f"{sym}: error ML {e}")
+        if USE_HEURISTIC_FALLBACK:
+            return heuristic_signal(df, trend, sym)
         DISABLED_PAIRS.add(sym)
         return None
 
