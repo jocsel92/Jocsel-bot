@@ -53,6 +53,7 @@ CONF_THRESHOLD_DEF_ALIGNED = 0.68
 TREND_BIAS = 0.10
 DEVIATION = 10
 MAGIC = 234567
+ORDER_FILLING_MODE = os.getenv("ORDER_FILLING_MODE", "FOK").upper()
 
 BUFFER_PIPS = 30
 TREND_EMA = 200
@@ -112,7 +113,7 @@ def is_news_block(now_utc: datetime) -> bool:
 
 def is_trading_time(now_utc: datetime) -> bool:
     now_lon_dt = now_utc.astimezone(LON_TZ)
-    if now_lon_dt.weekday() == 4:  # Friday
+    if now_lon_dt.weekday() >= 5:  # Saturday/Sunday
         return False
 
     now_lon = now_lon_dt.time()
@@ -403,7 +404,14 @@ def calc_sl_tp_with_rr(symbol, action, df):
     tick = mt5.symbol_info_tick(symbol)
     if tick is None:
         raise RuntimeError(f"{symbol}: sin tick.")
-    price = tick.ask if action == "buy" else tick.bid
+    if action == "buy":
+        if tick.ask is None:
+            raise RuntimeError(f"{symbol}: ask no disponible.")
+        price = tick.ask
+    else:
+        if tick.bid is None:
+            raise RuntimeError(f"{symbol}: bid no disponible.")
+        price = tick.bid
 
     extreme = calc_sl_tp_from_structure(df, action)
     buffer = BUFFER_PIPS * pip
@@ -433,7 +441,11 @@ def modify_position_sltp(symbol, ticket, sl, tp, magic, comment):
     }
     result = mt5.order_send(req)
     if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
-        print(f"{symbol}: fallo {comment} ticket={ticket} ret={None if result is None else result.retcode}")
+        res_comment = None if result is None else getattr(result, "comment", None)
+        print(
+            f"{symbol}: fallo {comment} ticket={ticket} ret={None if result is None else result.retcode} "
+            f"res_comment={res_comment} last_error={mt5.last_error()}"
+        )
     return result
 
 
@@ -496,6 +508,10 @@ def update_trailing_sl_dynamic(symbol, df):
 def send_order(symbol, action, lot, df):
     price, sl, tp, _, _ = calc_sl_tp_with_rr(symbol, action, df)
     order_type = mt5.ORDER_TYPE_BUY if action == "buy" else mt5.ORDER_TYPE_SELL
+    if ORDER_FILLING_MODE == "IOC":
+        filling_type = mt5.ORDER_FILLING_IOC
+    else:
+        filling_type = mt5.ORDER_FILLING_FOK
     req = {
         "action": mt5.TRADE_ACTION_DEAL,
         "symbol": symbol,
@@ -508,9 +524,16 @@ def send_order(symbol, action, lot, df):
         "magic": MAGIC,
         "comment": "ML-BOT-FX",
         "type_time": mt5.ORDER_TIME_GTC,
-        "type_filling": mt5.ORDER_FILLING_FOK,
+        "type_filling": filling_type,
     }
-    return mt5.order_send(req)
+    result = mt5.order_send(req)
+    invalid_fill = getattr(mt5, "TRADE_RETCODE_INVALID_FILL", None)
+    invalid_generic = getattr(mt5, "TRADE_RETCODE_INVALID", None)
+    fallback_retcodes = {code for code in (invalid_fill, invalid_generic) if code is not None}
+    if result is not None and result.retcode in fallback_retcodes:
+        req["type_filling"] = mt5.ORDER_FILLING_IOC
+        result = mt5.order_send(req)
+    return result
 
 
 def get_last_close_info(symbol):
@@ -597,7 +620,13 @@ def main():
             if tick is None:
                 print(f"{sym}: sin tick")
                 continue
-            price = tick.ask if tick.ask else tick.bid
+            if tick.ask is not None:
+                price = tick.ask
+            elif tick.bid is not None:
+                price = tick.bid
+            else:
+                print(f"{sym}: tick sin ask/bid")
+                continue
             pip = pip_size(sym)
 
             vwap_d = get_daily_vwap(sym)
@@ -629,7 +658,7 @@ def main():
                 continue
 
             if sym in LAST_TP_DIR and sym in LAST_TP_PRICE and LAST_TP_DIR[sym] == action:
-                atr_val = df["ATR_14"].iloc[-1]
+                atr_val = float(df["ATR_14"].iloc[-1])
                 if action == "sell" and price > (LAST_TP_PRICE[sym] + atr_val):
                     pass
                 elif action == "buy" and price < (LAST_TP_PRICE[sym] - atr_val):

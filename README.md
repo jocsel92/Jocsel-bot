@@ -26,6 +26,7 @@ Bot de trading Forex en MT5 con filtros de robustez para ejecución en vivo.
 - `BOT_LOT` (por defecto `0.2`)
 - `NEWS_EVENTS_UTC` (lista ISO UTC separada por comas)
 - `NEWS_BLOCK_MINUTES` (por defecto `30`)
+- `ORDER_FILLING_MODE` (`FOK` por defecto, o `IOC`)
 
 ## Ejecución
 
