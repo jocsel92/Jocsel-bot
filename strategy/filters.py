@@ -10,7 +10,7 @@ import pandas as pd
 
 
 # London session: 08:00-12:00 UTC
-# New York session: 13:00-17:00 UTC (overlap con London 13-12 se incluye)
+# New York session: 13:00-17:00 UTC (overlap London-NY: 12-13 UTC included)
 LONDON_START = 8
 LONDON_END = 12
 NY_START = 13

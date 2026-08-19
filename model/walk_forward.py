@@ -55,7 +55,6 @@ def walk_forward_validate(
             "subsample": 0.8,
             "colsample_bytree": 0.8,
             "eval_metric": "logloss",
-            "use_label_encoder": False,
         }
 
     n_samples = len(X)

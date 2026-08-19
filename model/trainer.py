@@ -52,7 +52,6 @@ def train_model(
             "subsample": 0.8,
             "colsample_bytree": 0.8,
             "eval_metric": "logloss",
-            "use_label_encoder": False,
         }
 
     # Escalar
