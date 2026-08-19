@@ -151,6 +151,13 @@ def label_dataset(
         london_lows.fillna(np.inf), ny_lows.fillna(np.inf)
     )
 
+    # --- Look-ahead bias protection ---
+    # Indicators (vwap_anchored, vwap_daily, ema_200) are causal by construction:
+    # they use only cumsum/ewm up to current bar.  We shift labels forward by 1 bar
+    # so the model never trains on a label derived from the same bar's price action.
+    # The label at bar t reflects a setup detected at bar t, but the model will only
+    # see it at bar t+1, preventing same-bar information leakage.
+
     # --- 4. Label logic ---
     df["label"] = 0
     df["stop"] = np.nan
@@ -220,5 +227,10 @@ def label_dataset(
                                     df.at[ts, "rrr"] = rrr_min
                             else:
                                 df.at[ts, "label"] = 0
+
+    # Shift labels forward by 1 bar to avoid look-ahead bias:
+    # A label at time t means "there was a valid setup at t", but the model
+    # should only use this information starting at t+1.
+    df["label"] = df["label"].shift(1).fillna(0).astype(int)
 
     return df
