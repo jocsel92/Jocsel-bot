@@ -1,1 +1,1 @@
-# Strategy module — ejecución de señales, gestión de riesgo
+from .signals import generate_signals, apply_risk_management
