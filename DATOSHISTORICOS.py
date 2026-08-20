@@ -1,9 +1,9 @@
 import argparse
+import csv
 import re
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-
-import pandas as pd
 
 FILENAME_RE = re.compile(
     r"^(?P<pair>[A-Z]{6})_(?P<timeframe>[A-Z0-9]+)_(?P<start>\d{12})_(?P<end>\d{12})\.csv$"
@@ -15,7 +15,17 @@ REQUIRED_FILES = {
 }
 
 MIN_REQUIRED_COLUMNS = {"open", "high", "low", "close"}
-EXPECTED_DELTA = pd.Timedelta(hours=1)
+EXPECTED_DELTA = timedelta(hours=1)
+
+
+DATETIME_FORMATS = (
+    "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%d %H:%M",
+    "%Y.%m.%d %H:%M:%S",
+    "%Y.%m.%d %H:%M",
+    "%Y/%m/%d %H:%M:%S",
+    "%Y/%m/%d %H:%M",
+)
 
 
 def parse_filename(name: str) -> dict:
@@ -24,62 +34,103 @@ def parse_filename(name: str) -> dict:
         raise ValueError(f"Nombre inválido: {name}")
 
     data = m.groupdict()
-    data["start_dt"] = pd.to_datetime(data["start"], format="%Y%m%d%H%M", utc=True)
-    data["end_dt"] = pd.to_datetime(data["end"], format="%Y%m%d%H%M", utc=True)
+    data["start_dt"] = datetime.strptime(data["start"], "%Y%m%d%H%M").replace(tzinfo=timezone.utc)
+    data["end_dt"] = datetime.strptime(data["end"], "%Y%m%d%H%M").replace(tzinfo=timezone.utc)
     return data
 
 
-def _extract_datetime(df: pd.DataFrame) -> pd.Series:
-    cols = {c.lower().strip(): c for c in df.columns}
+def _parse_datetime_value(raw: str) -> datetime | None:
+    if raw is None:
+        return None
+    value = str(raw).strip()
+    if not value:
+        return None
 
-    if "datetime" in cols:
-        return pd.to_datetime(df[cols["datetime"]], errors="coerce", utc=True)
+    # ISO handling first
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except ValueError:
+        pass
 
-    if "timestamp" in cols:
-        return pd.to_datetime(df[cols["timestamp"]], errors="coerce", utc=True)
+    for fmt in DATETIME_FORMATS:
+        try:
+            return datetime.strptime(value, fmt).replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
 
-    if "date" in cols and "time" in cols:
-        merged = df[cols["date"]].astype(str).str.strip() + " " + df[cols["time"]].astype(str).str.strip()
-        return pd.to_datetime(merged, errors="coerce", utc=True)
+    return None
+
+
+def _extract_datetimes(rows: list[dict], fieldnames_lower: dict) -> list[datetime | None]:
+    if "datetime" in fieldnames_lower:
+        col = fieldnames_lower["datetime"]
+        return [_parse_datetime_value(r.get(col)) for r in rows]
+
+    if "timestamp" in fieldnames_lower:
+        col = fieldnames_lower["timestamp"]
+        return [_parse_datetime_value(r.get(col)) for r in rows]
+
+    if "date" in fieldnames_lower and "time" in fieldnames_lower:
+        dcol = fieldnames_lower["date"]
+        tcol = fieldnames_lower["time"]
+        return [_parse_datetime_value(f"{r.get(dcol, '')} {r.get(tcol, '')}") for r in rows]
 
     raise ValueError("No se encontró columna datetime/timestamp ni combinación date+time")
 
 
-def _quality_checks(df: pd.DataFrame, expected_rows: int) -> dict:
-    df_cols = {c.lower().strip() for c in df.columns}
-    missing_cols = sorted(MIN_REQUIRED_COLUMNS - df_cols)
+def _read_csv_rows(path: Path) -> tuple[list[dict], dict]:
+    with path.open("r", encoding="utf-8", errors="ignore", newline="") as f:
+        reader = csv.DictReader(f)
+        if reader.fieldnames is None:
+            raise ValueError("CSV sin encabezados")
 
-    dt = _extract_datetime(df)
-    invalid_ts = int(dt.isna().sum())
+        rows = list(reader)
+        fieldnames_lower = {name.lower().strip(): name for name in reader.fieldnames}
+        return rows, fieldnames_lower
 
-    dt_valid = dt.dropna()
-    duplicates = int(dt_valid.duplicated().sum())
 
-    chrono_ok = bool(dt_valid.is_monotonic_increasing)
+def _quality_checks(rows: list[dict], fieldnames_lower: dict, expected_rows: int) -> dict:
+    missing_cols = sorted(MIN_REQUIRED_COLUMNS - set(fieldnames_lower.keys()))
 
-    dt_sorted = dt_valid.sort_values()
-    diffs = dt_sorted.diff().dropna()
+    dt_series = _extract_datetimes(rows, fieldnames_lower)
+    invalid_ts = sum(1 for dt in dt_series if dt is None)
 
-    gaps_all = int((diffs > EXPECTED_DELTA).sum())
-    missing_bars_all = int(((diffs[diffs > EXPECTED_DELTA] / EXPECTED_DELTA) - 1).sum()) if gaps_all else 0
+    dt_valid = [dt for dt in dt_series if dt is not None]
+    seen = set()
+    duplicates = 0
+    for dt in dt_valid:
+        if dt in seen:
+            duplicates += 1
+        else:
+            seen.add(dt)
 
-    prev_ts = dt_sorted.shift(1)
-    weekday_mask = (prev_ts.dt.dayofweek < 5) & (dt_sorted.dt.dayofweek < 5)
-    diffs_weekday = diffs[weekday_mask.loc[diffs.index]]
-    gaps_weekday = int((diffs_weekday > EXPECTED_DELTA).sum()) if not diffs_weekday.empty else 0
-    missing_bars_weekday = (
-        int(((diffs_weekday[diffs_weekday > EXPECTED_DELTA] / EXPECTED_DELTA) - 1).sum())
-        if gaps_weekday
-        else 0
-    )
+    chrono_ok = all(dt_valid[i] > dt_valid[i - 1] for i in range(1, len(dt_valid)))
 
-    row_count = len(df)
-    rows_match_expected = row_count == expected_rows
+    dt_sorted = sorted(dt_valid)
+    gaps_all = 0
+    missing_bars_all = 0
+    gaps_weekday = 0
+    missing_bars_weekday = 0
+
+    for i in range(1, len(dt_sorted)):
+        prev_dt = dt_sorted[i - 1]
+        curr_dt = dt_sorted[i]
+        delta = curr_dt - prev_dt
+        if delta > EXPECTED_DELTA:
+            gaps_all += 1
+            missing_bars_all += int(delta.total_seconds() // EXPECTED_DELTA.total_seconds()) - 1
+
+            if prev_dt.weekday() < 5 and curr_dt.weekday() < 5:
+                gaps_weekday += 1
+                missing_bars_weekday += int(delta.total_seconds() // EXPECTED_DELTA.total_seconds()) - 1
+
+    row_count = len(rows)
 
     return {
         "rows": row_count,
         "expected_rows": expected_rows,
-        "rows_match_expected": rows_match_expected,
+        "rows_match_expected": row_count == expected_rows,
         "missing_columns": ",".join(missing_cols) if missing_cols else "",
         "invalid_timestamps": invalid_ts,
         "duplicate_timestamps": duplicates,
@@ -93,15 +144,15 @@ def _quality_checks(df: pd.DataFrame, expected_rows: int) -> dict:
 
 def analyze_file(path: Path, expected_rows: int) -> dict:
     meta = parse_filename(path.name)
-    df = pd.read_csv(path)
-    checks = _quality_checks(df, expected_rows)
+    rows, fieldnames_lower = _read_csv_rows(path)
+    checks = _quality_checks(rows, fieldnames_lower, expected_rows)
 
     return {
         "file": path.name,
         "pair": meta["pair"],
         "timeframe": meta["timeframe"],
-        "start": str(meta["start_dt"]),
-        "end": str(meta["end_dt"]),
+        "start": meta["start_dt"].isoformat(),
+        "end": meta["end_dt"].isoformat(),
         **checks,
     }
 
@@ -109,9 +160,7 @@ def analyze_file(path: Path, expected_rows: int) -> dict:
 def validate_required_files(folder: Path) -> list[Path]:
     missing = [name for name in REQUIRED_FILES if not (folder / name).exists()]
     if missing:
-        raise FileNotFoundError(
-            "Faltan archivos requeridos:\n- " + "\n- ".join(missing)
-        )
+        raise FileNotFoundError("Faltan archivos requeridos:\n- " + "\n- ".join(missing))
 
     return [folder / name for name in REQUIRED_FILES]
 
@@ -120,9 +169,11 @@ def print_summary(results: list[dict]) -> None:
     print("\n=== RESUMEN ===")
     for r in results:
         status = "OK" if r["rows_match_expected"] else "ERROR_FILAS"
+        start_human = r["start"].replace("T", " ").replace("+00:00", "")
+        end_human = r["end"].replace("T", " ").replace("+00:00", "")
         print(
             f"- {r['file']} | {r['pair']} {r['timeframe']} | "
-            f"{r['start']} -> {r['end']} | filas: {r['rows']} ({status})"
+            f"{start_human} -> {end_human} | filas: {r['rows']} ({status})"
         )
 
 
@@ -140,7 +191,14 @@ def print_quality(results: list[dict]) -> None:
 
 
 def save_csv(results: list[dict], out_path: Path) -> None:
-    pd.DataFrame(results).to_csv(out_path, index=False)
+    if not results:
+        return
+
+    headers = list(results[0].keys())
+    with out_path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=headers)
+        writer.writeheader()
+        writer.writerows(results)
 
 
 def main() -> int:
