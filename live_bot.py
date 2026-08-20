@@ -47,17 +47,22 @@ warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=FutureWarning)
 
 # ── Globals ───────────────────────────────────────────────────────────────
-MODEL = None
-SCALER = None
+# Per-pair models: {"EURUSD": (model, scaler), "GBPUSD": (model, scaler)}
+MODELS: dict = {}
 
 
-def load_model(model_path: str = "xgboost_model.joblib",
-               scaler_path: str = "scaler.joblib"):
-    """Load the trained XGBoost model and scaler."""
-    global MODEL, SCALER
-    MODEL = load(model_path)
-    SCALER = load(scaler_path)
-    print(f"✅ Modelo cargado: {model_path}")
+def load_models(pairs: tuple):
+    """Load trained model + scaler for each pair from models_{pair}/ folder."""
+    import os
+    for pair in pairs:
+        model_dir = f"models_{pair.lower()}"
+        model_path = os.path.join(model_dir, "xgboost_model.joblib")
+        scaler_path = os.path.join(model_dir, "scaler.joblib")
+        if not os.path.exists(model_path) or not os.path.exists(scaler_path):
+            print(f"⚠️ Modelo no encontrado para {pair} en {model_dir}/ — omitido")
+            continue
+        MODELS[pair] = (load(model_path), load(scaler_path))
+        print(f"✅ Modelo cargado: {pair} desde {model_dir}/")
 
 
 def is_within_session(now_utc: datetime) -> bool:
@@ -76,8 +81,10 @@ def get_signal(symbol: str):
     -------
     (action, confidence) : ('buy'|'sell'|None, float)
     """
-    if MODEL is None or SCALER is None:
+    if symbol not in MODELS:
         return None, 0.0
+
+    MODEL, SCALER = MODELS[symbol]
 
     try:
         # Get 5-min data from MT5
@@ -258,14 +265,6 @@ def main():
         "--pair", default="EURUSD,GBPUSD",
         help="Comma-separated pairs (default: EURUSD,GBPUSD)",
     )
-    parser.add_argument(
-        "--model", default="xgboost_model.joblib",
-        help="Path to trained model",
-    )
-    parser.add_argument(
-        "--scaler", default="scaler.joblib",
-        help="Path to scaler",
-    )
     args = parser.parse_args()
 
     pairs = tuple(p.strip().upper() for p in args.pair.split(","))
@@ -275,7 +274,12 @@ def main():
         return
 
     tradelocker_connector.init()
-    load_model(args.model, args.scaler)
+    load_models(pairs)
+
+    if not MODELS:
+        print("❌ No se encontró ningún modelo entrenado. Entrena primero con pipeline.py")
+        mt5_connector.shutdown()
+        return
 
     # ── Telegram startup ──
     telegram_notifier.send_startup(pairs)

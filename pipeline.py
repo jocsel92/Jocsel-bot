@@ -13,6 +13,7 @@ Uso:
 """
 
 import argparse
+import os
 import sys
 
 import pandas as pd
@@ -26,8 +27,19 @@ from model.walk_forward import walk_forward_validate
 from strategy.filters import is_liquid_session
 
 
+def _model_dir(pair: str) -> str:
+    """Return the model output directory for a given pair, e.g. models_eurusd/."""
+    d = f"models_{pair.lower()}"
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
 def run_pipeline(csv_path: str, pair: str = "EURUSD", start: str = "2020-01-01"):
     """Ejecuta el pipeline completo de entrenamiento."""
+
+    out_dir = _model_dir(pair)
+    model_path = os.path.join(out_dir, "xgboost_model.joblib")
+    scaler_path = os.path.join(out_dir, "scaler.joblib")
 
     print(f"[1/6] Cargando datos de {pair} desde {csv_path}...")
     df = load_csv(csv_path, pair=pair)
@@ -74,9 +86,9 @@ def run_pipeline(csv_path: str, pair: str = "EURUSD", start: str = "2020-01-01")
 
     # --- 6. Train final model on all liquid data ---
     print(f"[6/6] Entrenando modelo final XGBoost ({len(X)} muestras)...")
-    model, scaler = train_model(X, y)
-    print("      → Modelo guardado: xgboost_model.joblib")
-    print("      → Scaler guardado: scaler.joblib")
+    model, scaler = train_model(X, y, model_path=model_path, scaler_path=scaler_path)
+    print(f"      → Modelo guardado: {model_path}")
+    print(f"      → Scaler guardado: {scaler_path}")
 
     # Métricas del modelo final (in-sample, referencia)
     from sklearn.metrics import classification_report
